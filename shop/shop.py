@@ -112,24 +112,6 @@ class Shop(commands.Cog):
         await self.pending_prompt(ctx, instance, data, item)
 
     @commands.command()
-    async def adventuretest(self,ctx):
-        """This is a test command"""
-
-        user = ctx.author
-        acog = ctx.bot.get_cog("Adventure")
-
-        async with Adventure.get_lock(acog,user):
-            try:
-                c = await Character.from_json(ctx, acog.config, user, acog._daily_bonus)
-            except:
-                return await ctx.send("Error getting character info")
-
-            c.treasure[1] += 1
-
-            await acog.config.user(user).set(await c.to_json(ctx,acog.config))
-            return await ctx.send("done")
-
-    @commands.command()
     @commands.max_concurrency(1, commands.BucketType.user)
     async def buy(self, ctx):
         """Opens up the Shop menu, lets you buy items."""
