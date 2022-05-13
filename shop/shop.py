@@ -37,7 +37,7 @@ from adventure.economy import EconomyCommands
 log = logging.getLogger("red.shop")
 
 __version__ = "3.1.13"
-__author__ = "Redjumpman"
+__author__ = "Ataraxy"
 
 
 def global_permissions():
@@ -938,6 +938,7 @@ class ShopManager:
                 await self.ctx.author.send(chunk)
 
     async def order(self, shop, item):
+        user = self.ctx.author
         try:
             async with self.instance.Shops() as shops:
                 shop_items = deepcopy(shops[shop]["Items"])
@@ -946,7 +947,7 @@ class ShopManager:
             return await self.ctx.send("Could not locate that shop or item.")
 
         cur = await bank.get_currency_name(self.ctx.guild)
-        stock, cost, _type = item_data["Qty"], item_data["Cost"], item_data["Type"]
+        stock, cost, _type, crarity = item_data["Qty"], item_data["Cost"], item_data["Type"], item_data["cRarity"]
 
         if _type == 'role':
             for user_role in self.ctx.author.roles:
@@ -1026,6 +1027,31 @@ class ShopManager:
             await self.ctx.author.add_roles(target_role)
             return await self.ctx.send(f"{self.ctx.author.mention}, you've received the **{item_data['Role']}** role!")
 
+        if _type == "achest":
+            acog = self.ctx.bot.get_cog("Adventure")
+
+            async with Adventure.get_lock(acog,user):
+                try:
+                    c = await Character.from_json(self.ctx, acog.config, user, acog._daily_bonus)
+                except:
+                    return await self.ctx.send("Error getting character info.")
+
+                if crarity == "rare":
+                    c.treasure[1] += amount
+                elif crarity == "epic":
+                    c.treasure[2] += amount
+                elif crarity == "legendary":
+                    c.treasure[3] += amount
+                elif crarity == "ascended":
+                    c.treasure[4] += amount
+                elif crarity == "set":
+                    c.treasure[5] += amount
+                else:
+                    c.treasure[0] += amount
+
+                await acog.config.user(user).set(await c.to_json(self.ctx,acog.config))
+                return await self.ctx.send(f"{self.ctx.author.mention}, you've purchased {amount} {crarity} Chests in Adventure.")
+
         if _type == "random":
             new_item = await self.random_item(shop)
             if new_item is None:
@@ -1084,7 +1110,7 @@ class ItemManager:
             return
         cost = await self.set_cost()
         info = await self.set_info()
-        _type, role, msgs = await self.set_type()
+        _type, role, msgs, crarity = await self.set_type()
         if _type != "auto":
             qty = await self.set_quantity(_type)
         else:
@@ -1097,6 +1123,7 @@ class ItemManager:
             "Info": info,
             "Role": role,
             "Messages": msgs,
+            "cRarity": crarity,
         }
 
         msg = "What shop would you like to add this item to?\n"
@@ -1136,7 +1163,7 @@ class ItemManager:
             await self.ctx.send("Item deletion canceled.")
 
     async def edit(self):
-        choices = ("name", "type", "role", "qty", "cost", "msgs", "quantity", "info", "messages")
+        choices = ("name", "type", "role", "qty", "cost", "msgs", "quantity", "info", "messages", "rarity")
 
         while True:
             shop, item, item_data = await self.get_item()
@@ -1150,6 +1177,8 @@ class ItemManager:
                     return False
                 elif m.content.lower() == "role" and item_data["Type"] != "role":
                     return False
+                elif m.content.lower() == "rarity" and item_data["Type"] != "achest":
+                    return False
                 elif m.content.lower() not in choices:
                     return False
                 else:
@@ -1157,7 +1186,7 @@ class ItemManager:
 
             await self.ctx.send(
                 "What would you like to edit for this item?\n"
-                "`Name`, `Type`, `Role`, `Quantity`, `Cost`, `Info`, or `Messages`?\n"
+                "`Name`, `Type`, `Role`, `Quantity`, `Cost`, `Info`, `Messages`, or 'Rarity'?\n"
                 "Note that `Messages` cannot be edited on non-auto type items."
             )
             choice = await self.ctx.bot.wait_for("message", timeout=25.0, check=predicate)
@@ -1174,6 +1203,8 @@ class ItemManager:
                 await self.set_cost(item=item, shop=shop)
             elif choice.content.lower() == "info":
                 await self.set_info(item=item, shop=shop)
+            elif choice.content.lower() == "rarity":
+                await self.set_rarity(item=item, shop=shop)
             else:
                 await self.set_messages(item_data["Type"], item=item, shop=shop)
 
@@ -1244,6 +1275,25 @@ class ItemManager:
             return await self.ctx.send("This item now assigns the {} role.".format(role.content))
         return role.content
 
+    def rarity_check(self, m):
+        valid_rarity = ["normal", "rare", "epic", "legendary", "ascended", "set"]
+        if m.content.lower() in valid_rarity:
+            return True
+        else:
+            return False
+
+    async def set_rarity(self, item=None, shop=None):
+        await self.ctx.send(
+            "What Chest Rarity should this item grant? Acceptable rarities: 'Normal', 'Rare', 'Epic', 'Legendary', 'Ascended', 'Set'"
+        )
+
+        rarity = await self.ctx.bot.wait_for("message", timeout=25, check=self.rarity_check)
+        if item:
+            async with self.instance.Shops() as shops:
+                shops[shop]["Items"][item]["cRarity"] = rarity.content
+            return await self.ctx.send("This item now grants {} chest in Adventure.".format(rarity.content))
+        return rarity.content
+
     async def set_quantity(self, _type=None, item=None, shop=None):
         if _type == "auto":
             return await self.ctx.send(
@@ -1266,7 +1316,7 @@ class ItemManager:
         return qty
 
     async def set_type(self, item=None, shop=None):
-        valid_types = ("basic", "random", "auto", "role")
+        valid_types = ("basic", "random", "auto", "role", "achest")
         await self.ctx.send(
             "What is the item type?\n"
             "```\n"
@@ -1274,6 +1324,7 @@ class ItemManager:
             "random - Picks a random item in the shop, weighted on cost.\n"
             "role   - Grants a role when redeemed.\n"
             "auto   - DM's a msg to the user instead of adding to their inventory.\n"
+            "achest - Distributes adventure chests."
             "```"
         )
         _type = await self.ctx.bot.wait_for("message", timeout=25, check=Checks(self.ctx, custom=valid_types).content)
@@ -1281,11 +1332,15 @@ class ItemManager:
         if _type.content.lower() == "auto":
             msgs = await self.set_messages("auto", item=item, shop=shop)
             if not item:
-                return "auto", None, msgs
+                return "auto", None, msgs, None
         elif _type.content.lower() == "role":
             role = await self.set_role(item=item, shop=shop)
             if not item:
-                return "role", role, None
+                return "role", role, None, None
+        elif _type.content.lower() == "achest":
+            rarity = await self.set_rarity(item=item, shop=shop)
+            if not item:
+                return "achest", None, None, rarity
         else:
             if item:
                 async with self.instance.Shops() as shops:
@@ -1293,10 +1348,11 @@ class ItemManager:
                     try:
                         del shops[shop]["Items"][item]["Messages"]
                         del shops[shop]["Items"][item]["Role"]
+                        del shops[shop]["Items"][item]["cRarity"]
                     except KeyError:
                         pass
                 return await self.ctx.send("Item type set to {}.".format(_type.content.lower()))
-            return _type.content.lower(), None, None
+            return _type.content.lower(), None, None, None
         async with self.instance.Shops() as shops:
             shops[shop]["Items"][item]["Type"] = _type.content.lower()
 
