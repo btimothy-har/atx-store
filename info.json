@@ -1,0 +1,13 @@
+{
+    "author" : ["Redjumpman (Redjumpman#1337)", "Ataraxy"],
+    "install_msg" : "",
+    "name" : "Ataraxy Store",
+    "short" : "Shop, Inventory, and Gift Card functionality.",
+    "description" : "Store and Inventory functionality forked from Redjumpman's Jumper Repo.",
+    "min_python_version": [3, 6, 0],
+	"tags": [
+		"games",
+		"economy",
+        "fun"
+	]
+}
