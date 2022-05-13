@@ -1019,20 +1019,20 @@ class ShopManager:
                     return await self.ctx.send("Error getting character info.")
 
                 if crarity == "rare":
-                    c.treasure[1] += amount
+                    c.treasure[1] += (amount*10)
                 elif crarity == "epic":
-                    c.treasure[2] += amount
+                    c.treasure[2] += (amount*10)
                 elif crarity == "legendary":
-                    c.treasure[3] += amount
+                    c.treasure[3] += (amount*10)
                 elif crarity == "ascended":
-                    c.treasure[4] += amount
+                    c.treasure[4] += (amount*10)
                 elif crarity == "set":
-                    c.treasure[5] += amount
+                    c.treasure[5] += (amount*10)
                 else:
-                    c.treasure[0] += amount
+                    c.treasure[0] += (amount*10)
 
                 await acog.config.user(user).set(await c.to_json(self.ctx,acog.config))
-                return await self.ctx.send(f"{self.ctx.author.mention}, you've purchased {amount} {crarity} Chests in Adventure.")
+                return await self.ctx.send(f"{self.ctx.author.mention}, you've received {amount*10} {crarity} Chests in Adventure.")
 
         if _type == "random":
             new_item = await self.random_item(shop)
