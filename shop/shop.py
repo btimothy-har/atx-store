@@ -8,6 +8,8 @@ import random
 import textwrap
 import uuid
 import sys
+import datetime
+import random
 
 from bisect import bisect
 from copy import deepcopy
@@ -34,11 +36,13 @@ from adventure.adventure import Adventure
 from adventure.charsheet import Character, Item
 from adventure.economy import EconomyCommands
 
+from disputils import BotEmbedPaginator, BotConfirmation, BotMultipleChoice
+from collections import namedtuple
+
 log = logging.getLogger("red.shop")
 
 __version__ = "3.1.13"
 __author__ = "Ataraxy"
-
 
 def global_permissions():
     async def pred(ctx: commands.Context):
@@ -63,7 +67,7 @@ def check_if_role_in_roles(admin_roles, user_roles):
 class Shop(commands.Cog):
     shop_defaults = {
         "Shops": {},
-        "Settings": {"Alerts": False, "Alert_Role": "Admin", "Closed": False, "Gifting": True, "Sorting": "price",},
+        "Settings": {"Alerts": False, "Alert_Role": "Admin", "Redeem_Role": "", "Distribution_Channel": "", "Closed": False, "Gifting": True, "Sorting": "price",},
         "Pending": {},
     }
     member_defaults = {
@@ -111,10 +115,10 @@ class Shop(commands.Cog):
             return
         await self.pending_prompt(ctx, instance, data, item)
 
-    @commands.command()
+    @commands.command(name="store", aliases=["buy"])
     @commands.max_concurrency(1, commands.BucketType.user)
     async def buy(self, ctx):
-        """Opens up the Shop menu, lets you buy items."""
+        """Browse the store, and buy items too."""
 
         try:
             instance = await self.get_instance(ctx, settings=True)
@@ -175,15 +179,14 @@ class Shop(commands.Cog):
         else:
             return self.config.member(user)
 
-    @commands.group(autohelp=True)
-    async def shop(self, ctx):
-        """Shop group command"""
-        pass
-
     @commands.max_concurrency(1, commands.BucketType.user)
-    @shop.command()
-    async def redeem(self, ctx, *, item: str):
-        """Redeems an item in your inventory."""
+    @commands.command()
+    async def redeem(self, ctx):
+        """Redeems Cash Items in your inventory."""
+
+        def check_qty(m):
+            return (int(m.content) <= item_data['Qty'])
+
         try:
             instance = await self.get_instance(ctx, user=ctx.author)
         except AttributeError:
@@ -192,122 +195,236 @@ class Shop(commands.Cog):
         if data is None:
             return await ctx.send("Your inventory is empty.")
 
-        if item not in data:
-            return await ctx.send("You don't own this item.")
+        redeemable_items = []
+        select_item = []
+        for item_name, item_data in data.items():
+            if item_data['Type'] == 'redeemable':
+                item_description = f"**{item_name}** (Qty: {item_data['Qty']})"
+                redeemable_items.append(item_name)
+                select_item.append(item_description)
 
-        await self.pending_prompt(ctx, instance, data, item)
+        if len(redeemable_items) == 0:
+            return await ctx.send(f"{ctx.author.mention}, you have no items available for redemption.")
 
-    @shop.command()
-    @commands.guild_only()
-    @commands.cooldown(1, 5, commands.BucketType.user)
-    async def trade(self, ctx, user: discord.Member, quantity: int, *, item: str):
-        """Attempts to trade an item with another user.
+        redeem_choice = BotMultipleChoice(ctx,select_item,"Select an item to redeem.")
+        await redeem_choice.run()
 
-        Cooldown is a static 60 seconds to prevent abuse.
-        Cooldown will trigger regardless of the outcome.
-        """
-        cancel = ctx.prefix + "cancel"
-        author_instance = await self.get_instance(ctx, user=ctx.author)
-        author_inventory = await author_instance.Inventory.all()
-        user_instance = await self.get_instance(ctx, user=user)
-        user_inv = await user_instance.Inventory.all()
+        if redeem_choice.choice == None:
+            return await redeem_choice.quit(f"{ctx.author.mention}, redemption has been cancelled.")
+        else:
+            select_index = select_item.index(redeem_choice.choice)
+            item_name = redeemable_items[select_index]
+            item_data = data[item_name]
 
-        if not await user_instance.Trading():
-            return await ctx.send("This user has trading turned off.")
-
-        if item not in author_inventory:
-            return await ctx.send("You don't own that item.")
-
-        if 0 < author_inventory[item]["Qty"] < quantity:
-            return await ctx.send("You don't have that many {}".format(item))
-
-        await ctx.send(
-            "{} has requested a trade with {}.\n"
-            "They are offering {}x {}.\n Do wish to trade?\n"
-            "*This trade can be canceled at anytime by typing `{}`.*"
-            "".format(ctx.author.mention, user.mention, quantity, item, cancel)
-        )
-
-        def check(m):
-            return (m.author == user and m.content.lower() in ("yes", "no", cancel)) or (
-                m.author == ctx.author and m.content.lower() == cancel
-            )
-
-        try:
-            decision = await ctx.bot.wait_for("message", timeout=25, check=check)
-        except asyncio.TimeoutError:
-            return await ctx.send("Trade request timed out. Canceled trade.")
-
-        if decision.content.lower() in ("no", cancel):
-            return await ctx.send("Trade canceled.")
-        await ctx.send("{} What is your counter offer?\n" '*Example: 3 "Healing Potions"*'.format(user.mention))
-
-        def predicate(m):
-            if m.author in (user, ctx.author) and m.content == cancel:
-                return True
-            if m.author != user:
-                return False
-            try:
-                q, i = [x.strip() for x in m.content.split('"')[:2] if x]
-            except ValueError:
-                return False
+            if item_data['Qty'] > 1:
+                ask_qty = await ctx.send(f"**How many of {item_name} would you like to redeem?**")
+                get_qty = await ctx.bot.wait_for("message", timeout=25, check=check_qty)
+                qty = int(get_qty.content)
+                await ask_qty.delete()
+                await get_qty.delete()
             else:
-                if i not in user_inv:
-                    return False
-                return 0 < user_inv[i]["Qty"] <= int(q)
+                qty = 1
 
-        try:
-            offer = await ctx.bot.wait_for("message", timeout=25, check=predicate)
-        except asyncio.TimeoutError:
-            return await ctx.send("Trade request timed out. Canceled trade.")
-        if offer.content.lower() == cancel:
-            return await ctx.send("Trade canceled.")
-        qty, item2 = [x.strip() for x in offer.content.split('"')[:2] if x]
-        await ctx.send(
-            "{} Do you wish to trade {}x {} for {}'s {}x {}?"
-            "".format(ctx.author.mention, quantity, item, user.mention, qty, item2)
-        )
+            timestamp = datetime.datetime.now()
+            if item_data['cashType'] == 'nitro':
+                embed = discord.Embed(title="Redemption Request",
+                                        description=f"Item: {item_name}"+
+                                                    f"\nQuantity: {qty}"+
+                                                    f"\n\u3000\nAll redemption requests will be fulfilled within **72 hours**.",
+                                        color=await ctx.embed_color())
+                embed.set_author(name=f"{ctx.author.display_name}#{ctx.author.discriminator}",icon_url=ctx.author.avatar_url)
+                embed.set_footer(text=f"{timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+                await redeem_choice.quit()
+                await ctx.send(content=ctx.guild.owner.mention, embed=embed)
 
-        def check2(m):
-            return (m.author == ctx.author and m.content.lower() in ("yes", "no", cancel)) or (
-                m.author == user and m.content.lower() == cancel
-            )
+            if item_data['cashType'] == 'giftcard':
+                card_platforms = ['Apple iTunes','Google Play','XBox Live','PlayStation Network','Nintendo eShop']
 
-        try:
-            final = await ctx.bot.wait_for("message", timeout=25, check=check2)
-        except asyncio.TimeoutError:
-            return await ctx.send("Trade request timed out. Canceled trade.")
+                gc_notice = await ctx.send("Note: Gift Card redemptions are subject to availability. If the particular combination of Platform & Country is not available, you will be offered alternatives.")
+                platform_choice = BotMultipleChoice(ctx,card_platforms,"Choose the platform you'd like to receive your Gift Card for.")
+                await platform_choice.run()
+                if platform_choice.choice == None:
+                    await redeem_choice.quit()
+                    return await platform_choice.quit(f"{ctx.author.mention}, redemption has been cancelled.")
+                else:
+                    platform_select = platform_choice.choice
+                    await platform_choice.quit()
 
-        if final.content.lower() in ("no", cancel):
-            return await ctx.send("Trade canceled.")
+                    ask_country = await ctx.send(f"**What is your Country of Residence (or Account Registration)?**")
+                    get_country = await ctx.bot.wait_for("message", timeout=25)
+                    country = get_country.content
+                    await ask_country.delete()
+                    await get_country.delete()
 
-        sm1 = ShopManager(ctx, instance=None, user_data=author_instance)
-        await sm1.add(item2, user_inv[item2], int(qty))
-        await sm1.remove(item, number=quantity)
+                await gc_notice.delete()
+                embed = discord.Embed(title="Redemption Request",
+                                        description=f"Item: {item_name}"+
+                                                    f"\nQuantity: {qty}"+
+                                                    f"\nPlatform: {platform_select}"+
+                                                    f"\nCountry: {country}"+
+                                                    f"\n\u3000\n**Note: Gift Card redemptions are subject to availability.** If the particular combination of Platform & Country is not available, you will be offered alternatives.\n*If no alternatives are available, you will receive the value equivalent of Discord Nitro.*"+
+                                                    f"\n\nAll redemption requests will be fulfilled within **72 hours**.",
+                                        color=await ctx.embed_color())
+                embed.set_author(name=f"{ctx.author.display_name}#{ctx.author.discriminator}",icon_url=ctx.author.avatar_url)
+                embed.set_footer(text=f"{timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+                await redeem_choice.quit()
+                await ctx.send(content=ctx.guild.owner.mention, embed=embed)
 
-        sm2 = ShopManager(ctx, instance=None, user_data=user_instance)
-        await sm2.add(item, author_inventory[item], quantity)
-        await sm2.remove(item2, number=int(qty))
+            sm = ShopManager(ctx, instance=None,user_data=instance)
+            return await sm.remove(item=item_name,number=qty)
 
-        await ctx.send("Trade complete.")
+    # @commands.command()
+    # @commands.guild_only()
+    # @commands.cooldown(1, 5, commands.BucketType.user)
+    # async def trade(self, ctx, user: discord.Member, quantity: int, *, item: str):
+    #     """Attempts to trade an item with another user.
 
-    @shop.command()
-    async def tradetoggle(self, ctx):
-        """Disables or enables trading with you."""
-        try:
-            instance = await self.get_instance(ctx, user=ctx.author)
-        except AttributeError:
-            return await ctx.send("You can't use this command in DMs when not in global mode.")
-        status = await instance.Trading()
-        await instance.Trading.set(not status)
-        await ctx.send("Trading with you is now {}.".format("disabled" if status else "enabled"))
+    #     Cooldown is a static 60 seconds to prevent abuse.
+    #     Cooldown will trigger regardless of the outcome.
+    #     """
+    #     cancel = ctx.prefix + "cancel"
+    #     author_instance = await self.get_instance(ctx, user=ctx.author)
+    #     author_inventory = await author_instance.Inventory.all()
+    #     user_instance = await self.get_instance(ctx, user=user)
+    #     user_inv = await user_instance.Inventory.all()
 
-    @shop.command()
+    #     if not await user_instance.Trading():
+    #         return await ctx.send("This user has trading turned off.")
+
+    #     if item not in author_inventory:
+    #         return await ctx.send("You don't own that item.")
+
+    #     if 0 < author_inventory[item]["Qty"] < quantity:
+    #         return await ctx.send("You don't have that many {}".format(item))
+
+    #     await ctx.send(
+    #         "{} has requested a trade with {}.\n"
+    #         "They are offering {}x {}.\n Do wish to trade?\n"
+    #         "*This trade can be canceled at anytime by typing `{}`.*"
+    #         "".format(ctx.author.mention, user.mention, quantity, item, cancel)
+    #     )
+
+    #     def check(m):
+    #         return (m.author == user and m.content.lower() in ("yes", "no", cancel)) or (
+    #             m.author == ctx.author and m.content.lower() == cancel
+    #         )
+
+    #     try:
+    #         decision = await ctx.bot.wait_for("message", timeout=25, check=check)
+    #     except asyncio.TimeoutError:
+    #         return await ctx.send("Trade request timed out. Canceled trade.")
+
+    #     if decision.content.lower() in ("no", cancel):
+    #         return await ctx.send("Trade canceled.")
+    #     await ctx.send("{} What is your counter offer?\n" '*Example: 3 "Healing Potions"*'.format(user.mention))
+
+    #     def predicate(m):
+    #         if m.author in (user, ctx.author) and m.content == cancel:
+    #             return True
+    #         if m.author != user:
+    #             return False
+    #         try:
+    #             q, i = [x.strip() for x in m.content.split('"')[:2] if x]
+    #         except ValueError:
+    #             return False
+    #         else:
+    #             if i not in user_inv:
+    #                 return False
+    #             return 0 < user_inv[i]["Qty"] <= int(q)
+
+    #     try:
+    #         offer = await ctx.bot.wait_for("message", timeout=25, check=predicate)
+    #     except asyncio.TimeoutError:
+    #         return await ctx.send("Trade request timed out. Canceled trade.")
+    #     if offer.content.lower() == cancel:
+    #         return await ctx.send("Trade canceled.")
+    #     qty, item2 = [x.strip() for x in offer.content.split('"')[:2] if x]
+    #     await ctx.send(
+    #         "{} Do you wish to trade {}x {} for {}'s {}x {}?"
+    #         "".format(ctx.author.mention, quantity, item, user.mention, qty, item2)
+    #     )
+
+    #     def check2(m):
+    #         return (m.author == ctx.author and m.content.lower() in ("yes", "no", cancel)) or (
+    #             m.author == user and m.content.lower() == cancel
+    #         )
+
+    #     try:
+    #         final = await ctx.bot.wait_for("message", timeout=25, check=check2)
+    #     except asyncio.TimeoutError:
+    #         return await ctx.send("Trade request timed out. Canceled trade.")
+
+    #     if final.content.lower() in ("no", cancel):
+    #         return await ctx.send("Trade canceled.")
+
+    #     sm1 = ShopManager(ctx, instance=None, user_data=author_instance)
+    #     await sm1.add(item2, user_inv[item2], int(qty))
+    #     await sm1.remove(item, number=quantity)
+
+    #     sm2 = ShopManager(ctx, instance=None, user_data=user_instance)
+    #     await sm2.add(item, author_inventory[item], quantity)
+    #     await sm2.remove(item2, number=int(qty))
+
+    #     await ctx.send("Trade complete.")
+
+    # @commands.command()
+    # async def tradetoggle(self, ctx):
+    #     """Disables or enables trading with you."""
+    #     try:
+    #         instance = await self.get_instance(ctx, user=ctx.author)
+    #     except AttributeError:
+    #         return await ctx.send("You can't use this command in DMs when not in global mode.")
+    #     status = await instance.Trading()
+    #     await instance.Trading.set(not status)
+    #     await ctx.send("Trading with you is now {}.".format("disabled" if status else "enabled"))
+
+    #@commands.command()
+    #@commands.guild_only()
+    #async def gift(self, ctx, user: discord.Member, quantity: int, *, item):
+        """Gift another user a set number of one of your items.
+
+        The item must be in your inventory and have enough to cover the quantity.
+
+        Examples
+        --------
+        [p]shop gift Redjumpman 3 Healing Potion
+        [p]shop give @Navi 1 Demon Sword
+        """
+    #    if quantity < 1:
+    #        return await ctx.send(":facepalm: How would that work genius?")
+    #    if user == ctx.author:
+    #        return await ctx.send("Really? Maybe you should find some friends.")
+    #    settings = await self.get_instance(ctx, settings=True)
+    #    if not await settings.Settings.Gifting():
+    #        return await ctx.send("Gifting is turned off.")
+    #    author_instance = await self.get_instance(ctx, user=ctx.author)
+    #    author_inv = await author_instance.Inventory.all()
+    #    if item not in author_inv:
+    #        return await ctx.send(f"You don't own any `{item}`.")
+    #    if author_inv[item]["Qty"] < quantity:
+    #        return await ctx.send(f"You don't have that many `{item}` to give.")
+
+    #    sm1 = ShopManager(ctx, instance=None, user_data=author_instance)
+    #    await sm1.remove(item, number=quantity)
+
+    #    user_instance = await self.get_instance(ctx, user=user)
+    #    sm2 = ShopManager(ctx, instance=None, user_data=user_instance)
+    #    await sm2.add(item, author_inv[item], quantity)
+
+    #    await ctx.send(f"{ctx.author.mention} gifted {user.mention} {quantity}x {item}.")
+
+
+    @commands.group(autohelp=True)
+    async def shopadmin(self, ctx):
+        """Shop Admin group command"""
+        pass
+
+    @shopadmin.command()
     async def version(self, ctx):
         """Shows the current Shop version."""
         await ctx.send("Shop is running version {}.".format(__version__))
 
-    @shop.command()
+    @shopadmin.command()
     @commands.is_owner()
     async def wipe(self, ctx):
         """Wipes all shop cog data."""
@@ -328,64 +445,29 @@ class Shop(commands.Cog):
         else:
             return await ctx.send("Wipe canceled.")
 
-    @shop.command()
-    @global_permissions()
-    @commands.guild_only()
-    @commands.max_concurrency(1, commands.BucketType.user)
-    async def pending(self, ctx):
-        """Displays the pending menu."""
-        instance = await self.get_instance(ctx, settings=True)
-        if not await instance.Pending():
-            return await ctx.send("There are not any pending items.")
-        data = await instance.Pending.all()
-        menu = ShopMenu(ctx, data, mode=1, sorting="name")
+    # @shopadmin.command()
+    # @global_permissions()
+    # @commands.guild_only()
+    # @commands.max_concurrency(1, commands.BucketType.user)
+    # async def pending(self, ctx):
+    #     """Displays the pending menu."""
+    #     instance = await self.get_instance(ctx, settings=True)
+    #     if not await instance.Pending():
+    #         return await ctx.send("There are not any pending items.")
+    #     data = await instance.Pending.all()
+    #     menu = ShopMenu(ctx, data, mode=1, sorting="name")
 
-        try:
-            user, item, = await menu.display()
-        except RuntimeError:
-            return
+    #     try:
+    #         user, item, = await menu.display()
+    #     except RuntimeError:
+    #         return
 
-        try:
-            await self.clear_single_pending(ctx, instance, data, item, user)
-        except asyncio.TimeoutError:
-            await ctx.send("Request timed out.")
+    #     try:
+    #         await self.clear_single_pending(ctx, instance, data, item, user)
+    #     except asyncio.TimeoutError:
+    #         await ctx.send("Request timed out.")
 
-    @shop.command()
-    @commands.guild_only()
-    async def gift(self, ctx, user: discord.Member, quantity: int, *, item):
-        """Gift another user a set number of one of your items.
-
-        The item must be in your inventory and have enough to cover the quantity.
-
-        Examples
-        --------
-        [p]shop gift Redjumpman 3 Healing Potion
-        [p]shop give @Navi 1 Demon Sword
-        """
-        if quantity < 1:
-            return await ctx.send(":facepalm: How would that work genius?")
-        if user == ctx.author:
-            return await ctx.send("Really? Maybe you should find some friends.")
-        settings = await self.get_instance(ctx, settings=True)
-        if not await settings.Settings.Gifting():
-            return await ctx.send("Gifting is turned off.")
-        author_instance = await self.get_instance(ctx, user=ctx.author)
-        author_inv = await author_instance.Inventory.all()
-        if item not in author_inv:
-            return await ctx.send(f"You don't own any `{item}`.")
-        if author_inv[item]["Qty"] < quantity:
-            return await ctx.send(f"You don't have that many `{item}` to give.")
-
-        sm1 = ShopManager(ctx, instance=None, user_data=author_instance)
-        await sm1.remove(item, number=quantity)
-
-        user_instance = await self.get_instance(ctx, user=user)
-        sm2 = ShopManager(ctx, instance=None, user_data=user_instance)
-        await sm2.add(item, author_inv[item], quantity)
-
-        await ctx.send(f"{ctx.author.mention} gifted {user.mention} {quantity}x {item}.")
-
-    @shop.command()
+    @shopadmin.command()
     @global_permissions()
     @commands.guild_only()
     async def give(self, ctx, user: discord.Member, quantity: int, *shopitem):
@@ -419,7 +501,7 @@ class Shop(commands.Cog):
             return await ctx.send("Invalid shop name.")
         elif item not in shops[shop]["Items"]:
             return await ctx.send("That item in not in the {} shop.".format(shop))
-        elif shops[shop]["Items"][item]["Type"] not in ("basic", "role"):
+        elif shops[shop]["Items"][item]["Type"] not in ("basic", "role", "distributable","redeemable"):
             return await ctx.send("You can only give basic or role type items.")
         else:
             data = deepcopy(shops[shop]["Items"][item])
@@ -428,7 +510,7 @@ class Shop(commands.Cog):
             await sm.add(item, data, quantity)
             await ctx.send("{} just gave {} a {}.".format(ctx.author.mention, user.mention, item))
 
-    @shop.command()
+    @shopadmin.command()
     @global_permissions()
     @commands.guild_only()
     async def clearinv(self, ctx, user: discord.Member):
@@ -441,7 +523,7 @@ class Shop(commands.Cog):
         await instance.Inventory.clear()
         await ctx.send("Done. Inventory wiped for {}.".format(user.name))
 
-    @shop.command()
+    @shopadmin.command()
     @global_permissions()
     @commands.guild_only()
     async def manager(self, ctx, action: str):
@@ -459,7 +541,7 @@ class Shop(commands.Cog):
         except asyncio.TimeoutError:
             await ctx.send("Shop manager timed out.")
 
-    @shop.command()
+    @shopadmin.command()
     @global_permissions()
     @commands.guild_only()
     async def item(self, ctx, action: str):
@@ -473,7 +555,7 @@ class Shop(commands.Cog):
         except asyncio.TimeoutError:
             return await ctx.send("Request timed out. Process canceled.")
 
-    @shop.command()
+    @shopadmin.command()
     @global_permissions()
     @commands.guild_only()
     async def restock(self, ctx, amount: int, *, shop_name: str):
@@ -508,7 +590,7 @@ class Shop(commands.Cog):
         else:
             await ctx.send("Restock canceled.")
 
-    @shop.command()
+    @shopadmin.command()
     @global_permissions()
     @commands.guild_only()
     async def bulkadd(self, ctx, style: str, *, entry: str):
@@ -549,6 +631,144 @@ class Shop(commands.Cog):
             await parser.search_csv(fp)
         else:
             await parser.parse_text_entry(entry)
+
+    @shopadmin.command(name="rundist")
+    @commands.is_owner()
+    async def run_distribution(self,ctx):
+        """Runs distribution process for Distributable items."""
+
+        instance = await self.get_instance(ctx, settings=True)
+        
+        try:
+            redeem_role = await instance.Settings.Redeem_Role()
+            redemption_role = discord.utils.get(ctx.guild.roles, name=redeem_role)
+        except:
+            redemption_role = None        
+
+        try:
+            announcement_id = await instance.Settings.Distribution_Channel()
+            announcement_channel = discord.utils.get(ctx.guild.channels,id=announcement_id)
+        except:
+            announcement_channel = None
+
+        nitro_dist = []
+        giftcard_dist = []
+
+        prefix = {
+            'distributable': '[D]',
+            'redeemable': '[R]',
+            }
+        itemCashType = {
+            'nitro': 'Discord Nitro',
+            'giftcard': 'Gift Card',
+            }
+
+        all_inventory = await self.config.all_members()
+
+        for user, data in all_inventory[ctx.guild.id].items():            
+            for item, item_data in data['Inventory'].items():
+
+                if item_data['Type'] == 'distributable' and item_data['cashType'] == 'nitro':
+                    nitro_item = [{
+                        'user': user,
+                        'item': item,
+                        'item_data': item_data,
+                        }]
+                    nitro_item = nitro_item * item_data['Qty']
+                    nitro_dist.extend(nitro_item)
+
+                if item_data['Type'] == 'distributable' and item_data['cashType'] == 'giftcard':
+                    giftcard_item = [{
+                        'user': user,
+                        'item': item,
+                        'item_data': item_data,
+                        }]
+                    giftcard_item = giftcard_item * item_data['Qty']
+                    giftcard_dist.extend(giftcard_item)
+
+        if len(nitro_dist) > 0:
+            random.shuffle(nitro_dist)
+            nitro_select = random.choice(nitro_dist)
+            nitro_select['item_data']['Type'] = 'redeemable'
+            nitro_recipient = ctx.guild.get_member(nitro_select['user'])
+
+            if nitro_select['item_data']['cashValue'] == '1Y':
+                nitro_name = f"{prefix[nitro_select['item_data']['Type']]} {itemCashType[nitro_select['item_data']['cashType']]} - 1 Year"
+            else:
+                nitro_name = f"{prefix[nitro_select['item_data']['Type']]} {itemCashType[nitro_select['item_data']['cashType']]} - {nitro_select['item_data']['cashValue']} Month(s)"
+
+            user_instance = await self.get_instance(ctx, user=nitro_recipient)
+            sm = ShopManager(ctx,None,user_instance)
+
+            await sm.remove(item=nitro_select['item'],number=1)
+            await sm.add(item=f"{nitro_name}",data=nitro_select['item_data'],quantity=1)
+            
+            if redemption_role:
+                await nitro_recipient.add_roles(redemption_role)
+            if announcement_channel:
+                await announcement_channel.send(content=f"{nitro_recipient.mention} is now able to redeem 1x **{nitro_name}**!")
+
+        if len(giftcard_dist) > 0:
+            random.shuffle(giftcard_dist)
+            giftcard_select = random.choice(giftcard_dist)
+            giftcard_select['item_data']['Type'] = 'redeemable'
+            giftcard_recipient = ctx.guild.get_member(giftcard_select['user'])
+
+            giftcard_name = f"{prefix[giftcard_select['item_data']['Type']]} {itemCashType[giftcard_select['item_data']['cashType']]} - USD {giftcard_select['item_data']['cashValue']}"
+
+            user_instance = await self.get_instance(ctx, user=giftcard_recipient)
+            sm = ShopManager(ctx, None, user_instance)
+            await sm.remove(item=giftcard_select['item'],number=1)
+            await sm.add(item=f"{giftcard_name}", data=giftcard_select['item_data'], quantity=1)
+            
+            if redemption_role:
+                await giftcard_recipient.add_roles(redemption_role)
+            if announcement_channel:
+                await announcement_channel.send(content=f"{giftcard_recipient.mention} is now able to redeem 1x **{giftcard_name}**!")
+
+    @shopadmin.command(name="runcleanup")
+    @commands.is_owner()
+    async def run_cleanup(self,ctx):
+        """Runs distribution process for Distributable items."""
+
+        instance = await self.get_instance(ctx, settings=True)
+        
+        try:
+            redeem_role = await instance.Settings.Redeem_Role()
+            redemption_role = discord.utils.get(ctx.guild.roles, name=redeem_role)
+        except:
+            redemption_role = None        
+
+        all_user_data = await self.config.all_members()
+
+        for user_id, data in all_user_data[ctx.guild.id].items():
+            member = ctx.guild.get_member(user_id)
+            if member == None:
+                memberPlaceholder = namedtuple("placeholder","id guild")
+                member = memberPlaceholder(user_id,ctx.guild)
+                await self.config.member(member).clear()
+
+        if redemption_role:
+            members_with_redemption = redemption_role.members
+
+            for member in members_with_redemption:
+                member_has_redemption = False
+                member_data = await self.get_instance(ctx, user=member)
+
+                if not await member_data.Inventory():
+                    await member.remove_roles(redemption_role)
+
+                else:
+                    inventory_data = await member_data.Inventory.all()
+                
+                    for item, item_data in inventory_data.items():
+                        if item_data['Type'] == 'redeemable':
+                            member_has_redemption = True
+
+                    if not member_has_redemption:
+                        await member.remove_roles(redemption_role)
+
+        return await ctx.send("Clean up completed.")
 
     # -----------------------------------------------------------------------------
 
@@ -599,31 +819,52 @@ class Shop(commands.Cog):
         else:
             await ctx.send("Shop will remain {}.".format(mode))
 
+    # @setshop.command()
+    # @global_permissions()
+    # @commands.guild_only()
+    # async def alertrole(self, ctx, role: discord.Role):
+    #     """Sets the role that will receive alerts.
+
+    #     Alerts will be sent to any user who has this role on the server. If
+    #     the shop is global, then the owner will receive alerts regardless
+    #     of their role, until they turn off alerts.
+    #     """
+    #     if role.name == "Bot":
+    #         return
+    #     instance = await self.get_instance(ctx, settings=True)
+    #     await instance.Settings.Alert_Role.set(role.name)
+    #     await ctx.send("Alert role has been set to {}.".format(role.name))
+
     @setshop.command()
     @global_permissions()
     @commands.guild_only()
-    async def alertrole(self, ctx, role: discord.Role):
-        """Sets the role that will receive alerts.
-
-        Alerts will be sent to any user who has this role on the server. If
-        the shop is global, then the owner will receive alerts regardless
-        of their role, until they turn off alerts.
-        """
+    async def redeemrole(self, ctx, role: discord.Role):
+        """Sets the role that is allowed to redeem items."""
         if role.name == "Bot":
             return
         instance = await self.get_instance(ctx, settings=True)
-        await instance.Settings.Alert_Role.set(role.name)
-        await ctx.send("Alert role has been set to {}.".format(role.name))
+        await instance.Settings.Redeem_Role.set(role.name)
+        await ctx.send("Redeem role has been set to {}.".format(role.name))
 
     @setshop.command()
     @global_permissions()
     @commands.guild_only()
-    async def alerts(self, ctx):
-        """Toggles alerts when users redeem items."""
+    async def redemptionchannel(self, ctx, channel_id=0):
+        """Sets the role that is allowed to redeem items."""
+
         instance = await self.get_instance(ctx, settings=True)
-        status = await instance.Settings.Alerts()
-        await instance.Settings.Alerts.set(not status)
-        await ctx.send("Alert role will {} messages.".format("no longer" if status else "receive"))
+        await instance.Settings.Distribution_Channel.set(channel_id)
+        await ctx.send("The Announcement Channel for Distributions has been set to <#{}>.".format(channel_id))
+
+    # @setshop.command()
+    # @global_permissions()
+    # @commands.guild_only()
+    # async def alerts(self, ctx):
+    #     """Toggles alerts when users redeem items."""
+    #     instance = await self.get_instance(ctx, settings=True)
+    #     status = await instance.Settings.Alerts()
+    #     await instance.Settings.Alerts.set(not status)
+    #     await ctx.send("Alert role will {} messages.".format("no longer" if status else "receive"))
 
     @setshop.command()
     @global_permissions()
@@ -639,15 +880,15 @@ class Shop(commands.Cog):
         await instance.Settings.Sorting.set(style.lower())
         await ctx.send(f"Shops will now be sorted by {style}.")
 
-    @setshop.command()
-    @global_permissions()
-    @commands.guild_only()
-    async def gifting(self, ctx):
-        """Toggles if users can gift items."""
-        instance = await self.get_instance(ctx, settings=True)
-        status = await instance.Settings.Gifting()
-        await instance.Settings.Gifting.set(not status)
-        await ctx.send(f"Gifting is now {'OFF'} if status else {'ON'}.")
+    #@setshop.command()
+    #@global_permissions()
+    #@commands.guild_only()
+    #async def gifting(self, ctx):
+    #    """Toggles if users can gift items."""
+    #    instance = await self.get_instance(ctx, settings=True)
+    #    status = await instance.Settings.Gifting()
+    #    await instance.Settings.Gifting.set(not status)
+    #    await ctx.send(f"Gifting is now {'OFF'} if status else {'ON'}.")
 
     @setshop.command()
     @global_permissions()
@@ -929,7 +1170,7 @@ class ShopManager:
             return await self.ctx.send("Could not locate that shop or item.")
 
         cur = await bank.get_currency_name(self.ctx.guild)
-        stock, cost, _type, crarity = item_data["Qty"], item_data["Cost"], item_data["Type"], item_data["cRarity"]
+        stock, cost, _type = item_data["Qty"], item_data["Cost"], item_data["Type"]
 
         if _type == 'role':
             for user_role in self.ctx.author.roles:
@@ -937,7 +1178,7 @@ class ShopManager:
                     return await self.ctx.send(f"{self.ctx.author.mention}, you already have the **{item_data['Role']}** role.")
 
         ask_qty = True
-        if _type == 'role':
+        if _type == 'role' or _type == 'aitem':
             ask_qty = False
         if _type == 'random':
             ask_qty = False
@@ -946,12 +1187,11 @@ class ShopManager:
         e.add_field(name=item, value=item_data["Info"], inline=False)
         if ask_qty:
             text = (
-                f"How many {item} would you like to purchase?\n*If this "
-                f"is a random item, you can only buy 1 at a time.*"
+                f"How many {item} would you like to purchase?"
             )
         else:
             text = (
-                f"Reply with 'yes' to confirm that your purchase of {item}.\n\n**To cancel, reply with 'exit' or 'cancel'.**"
+                f"Reply with 'yes' to confirm your purchase of {item}.\n\n**To cancel, reply with 'exit' or 'cancel'.**"
             )
         await self.ctx.send(content=text, embed=e)
 
@@ -1011,6 +1251,7 @@ class ShopManager:
 
         if _type == "achest":
             acog = self.ctx.bot.get_cog("Adventure")
+            crarity = item_data["cRarity"]
 
             async with Adventure.get_lock(acog,user):
                 try:
@@ -1032,7 +1273,21 @@ class ShopManager:
                     c.treasure[0] += (amount*10)
 
                 await acog.config.user(user).set(await c.to_json(self.ctx,acog.config))
-                return await self.ctx.send(f"{self.ctx.author.mention}, you've received {amount*10} {crarity} Chests in Adventure.")
+                return await self.ctx.send(f"{self.ctx.author.mention}, you've received {amount*10} {crarity.capitalize()} Chests in Adventure.")
+
+        if _type == "aitem":
+            acog = self.ctx.bot.get_cog("Adventure")
+            item_astats = item_data['aItemStats']
+            adventure_item = {item: item_astats}
+            adventure_item_grant = Item.from_json(self.ctx, adventure_item)
+            async with Adventure.get_lock(acog,user):
+                try:
+                    c = await Character.from_json(self.ctx, acog.config, user, acog._daily_bonus)
+                except:
+                    return await self.ctx.send("Error getting character info.")
+                await c.add_to_backpack(adventure_item_grant)
+                await acog.config.user(user).set(await c.to_json(self.ctx,acog.config))
+                return await self.ctx.send(f"{self.ctx.author.mention}, you've received {adventure_item_grant} in your Backpack.")
 
         if _type == "random":
             new_item = await self.random_item(shop)
@@ -1092,7 +1347,7 @@ class ItemManager:
             return
         cost = await self.set_cost()
         info = await self.set_info()
-        _type, role, msgs, crarity = await self.set_type()
+        _type, role, msgs, crarity, itemstats, cashType, cashValue = await self.set_type()
         if _type != "auto":
             qty = await self.set_quantity(_type)
         else:
@@ -1106,7 +1361,28 @@ class ItemManager:
             "Role": role,
             "Messages": msgs,
             "cRarity": crarity,
+            "aItemStats": itemstats,
+            "cashType": cashType,
+            "cashValue": cashValue,
         }
+
+        if _type == 'distributable' or _type == 'redeemable':
+            prefix = {
+                'distributable': '[D]',
+                'redeemable': '[R]',
+                }
+            itemCashType = {
+                'nitro': 'Discord Nitro',
+                'giftcard': 'Gift Card',
+                }
+
+            if cashType == 'nitro':
+                if cashValue == '1Y':
+                    name = f"{prefix[_type]} {itemCashType[cashType]} - 1 Year"
+                else:
+                    name = f"{prefix[_type]} {itemCashType[cashType]} - {cashValue} Month(s)"
+            else:
+                name = f"{prefix[_type]} {itemCashType[cashType]} - USD {cashValue}"
 
         msg = "What shop would you like to add this item to?\n"
         shops = await self.instance.Shops()
@@ -1272,9 +1548,143 @@ class ItemManager:
         rarity = await self.ctx.bot.wait_for("message", timeout=25, check=self.rarity_check)
         if item:
             async with self.instance.Shops() as shops:
-                shops[shop]["Items"][item]["cRarity"] = rarity.content
-            return await self.ctx.send("This item now grants {} chest in Adventure.".format(rarity.content))
-        return rarity.content
+                shops[shop]["Items"][item]["cRarity"] = rarity.content.lower()
+            return await self.ctx.send("This item now grants {} chest in Adventure.".format(rarity.content.lower()))
+        return rarity.content.lower()
+
+    def slot_check(self, m):
+        valid_slots = [
+            "head",
+            "neck",
+            "chest",
+            "gloves",
+            "belt",
+            "legs",
+            "boots",
+            "left",
+            "right",
+            "two handed",
+            "ring",
+            "charm",
+            ]
+        if m.content.lower() in valid_slots:
+            return True
+        else:
+            return False
+
+    async def set_itemstats(self, item=None, shop=None):
+
+        await self.ctx.send(
+            "Please specify the Slot of this item. Acceptable slots: head, neck, chest, gloves, belt, legs, boots, left, right, two handed, ring, charm."
+        )
+        slot_list = []
+        slot = await self.ctx.bot.wait_for("message", timeout=25, check=self.slot_check)
+        slot_list.append(slot.content.lower())
+
+        await self.ctx.send(
+            "Please specify the ATT stat of this item."
+        )
+        att = await self.ctx.bot.wait_for("message", timeout=25)
+
+        await self.ctx.send(
+            "Please specify the CHA stat of this item."
+        )
+        cha = await self.ctx.bot.wait_for("message", timeout=25)
+
+        await self.ctx.send(
+            "Please specify the INT stat of this item."
+        )
+        intel = await self.ctx.bot.wait_for("message", timeout=25)
+
+        await self.ctx.send(
+            "Please specify the DEX stat of this item."
+        )
+        dex = await self.ctx.bot.wait_for("message", timeout=25)
+
+        await self.ctx.send(
+            "Please specify the LUCK stat of this item."
+        )
+        luck = await self.ctx.bot.wait_for("message", timeout=25)
+
+        await self.ctx.send(
+            "Please specify the DEGRADE value of this item."
+        )
+        degrade = await self.ctx.bot.wait_for("message", timeout=25)
+
+        await self.ctx.send(
+            "Please specify the LEVEL requirement of this item."
+        )
+        level = await self.ctx.bot.wait_for("message", timeout=25)
+
+        itemStatsDict = {
+            "att": int(att.content),
+            "cha": int(cha.content),
+            "int": int(intel.content),
+            "dex": int(dex.content),
+            "luck": int(luck.content),
+            "rarity": "event",
+            "slot": slot_list,
+            "degrade": int(degrade.content),
+            "lvl": int(level.content),
+            }
+
+        if item:
+            async with self.instance.Shops() as shops:
+                shops[shop]["Items"][item]["aItemStats"] = itemStatsDict
+            return await self.ctx.send("This item now grants {} in Adventure.".format(itemStatsDict))
+        return itemStatsDict
+
+    def cashtype_check(self, m):
+        valid_cashtype = ["nitro", "giftcard"]
+        if m.content.lower() in valid_cashtype:
+            return True
+        else:
+            return False
+
+    async def set_cashtype(self, item=None, shop=None):
+        await self.ctx.send(
+            "What Cash Type should this item grant? Valid types: Nitro or GiftCard."
+        )
+
+        cashtype = await self.ctx.bot.wait_for("message", timeout=25, check=self.cashtype_check)
+        if item:
+            async with self.instance.Shops() as shops:
+                shops[shop]["Items"][item]["cashType"] = cashtype.content.lower()
+            return await self.ctx.send("This item now references {} Cash Type".format(cashtype.content.lower()))
+        return cashtype.content.lower()
+
+    async def set_cashvalue(self, item=None, shop=None, type=None):
+
+        def nitro_check(m):
+            return m.author == self.ctx.author and m.content.isdigit() and int(m.content) >= 0 and int(m.content) <= 12
+        def giftcard_check(m):
+            return m.author == self.ctx.author and m.content.isdigit() and int(m.content) >= 0 and int(m.content) <= 50
+
+        if type == 'nitro':
+            await self.ctx.send(
+                "How many months of Nitro does this provide? Max of 12 months."
+            )
+            nitroValue = await self.ctx.bot.wait_for("message", timeout=25, check=nitro_check)
+            if int(nitroValue.content) == 12:
+                cashValue = "1Y"
+            else:
+                cashValue = str(nitroValue.content)
+            if item:
+                async with self.instance.Shops() as shops:
+                    shops[shop]["Items"][item]["cashValue"] = cashValue
+                return await self.ctx.send("This item now provides {} of Discord Nitro.".format(cashValue))
+            return cashValue
+
+        if type == 'giftcard':
+            await self.ctx.send(
+                "What's the value of this Gift Card? In USD. Max of 50."
+            )
+            giftcardValue = await self.ctx.bot.wait_for("message", timeout=25, check=giftcard_check)
+            if item:
+                async with self.instance.Shops() as shops:
+                    shops[shop]["Items"][item]["cashValue"] = str(giftcardValue.content)
+                return await self.ctx.send("This Gift Card item is worth USD {}.".format(giftcardValue.content))
+            return str(giftcardValue.content)
 
     async def set_quantity(self, _type=None, item=None, shop=None):
         if _type == "auto":
@@ -1298,7 +1708,7 @@ class ItemManager:
         return qty
 
     async def set_type(self, item=None, shop=None):
-        valid_types = ("basic", "random", "auto", "role", "achest")
+        valid_types = ("basic", "random", "auto", "role", "achest", "aitem", "distributable", "redeemable")
         await self.ctx.send(
             "What is the item type?\n"
             "```\n"
@@ -1306,7 +1716,10 @@ class ItemManager:
             "random - Picks a random item in the shop, weighted on cost.\n"
             "role   - Grants a role when redeemed.\n"
             "auto   - DM's a msg to the user instead of adding to their inventory.\n"
-            "achest - Distributes adventure chests."
+            "achest - Distributes adventure chests.\n"
+            "aitem - Grants a special item in Adventure.\n"
+            "distributable - Cash Item distributable. A Cash item that is pending distribution (i.e. not redeemable yet).\n"
+            "redeemable - Cash Item redeemable. A Cash item that can be redeemed and claimed."
             "```"
         )
         _type = await self.ctx.bot.wait_for("message", timeout=25, check=Checks(self.ctx, custom=valid_types).content)
@@ -1314,15 +1727,28 @@ class ItemManager:
         if _type.content.lower() == "auto":
             msgs = await self.set_messages("auto", item=item, shop=shop)
             if not item:
-                return "auto", None, msgs, None
+                return "auto", None, msgs, None, None, None, None
+
         elif _type.content.lower() == "role":
             role = await self.set_role(item=item, shop=shop)
             if not item:
-                return "role", role, None, None
+                return "role", role, None, None, None, None, None
+
         elif _type.content.lower() == "achest":
             rarity = await self.set_rarity(item=item, shop=shop)
             if not item:
-                return "achest", None, None, rarity
+                return "achest", None, None, rarity, None, None, None
+
+        elif _type.content.lower() == "aitem":
+            stats = await self.set_itemstats(item=item, shop=shop)
+            if not item:
+                return "aitem", None, None, None, stats, None, None
+
+        elif _type.content.lower() == "distributable" or _type.content.lower() == "redeemable":
+            cashType = await self.set_cashtype(item=item, shop=shop)
+            cashValue = await self.set_cashvalue(item=item, shop=shop, type=cashType)
+            if not item:
+                return _type.content.lower(), None, None, None, None, cashType, cashValue
         else:
             if item:
                 async with self.instance.Shops() as shops:
@@ -1331,10 +1757,13 @@ class ItemManager:
                         del shops[shop]["Items"][item]["Messages"]
                         del shops[shop]["Items"][item]["Role"]
                         del shops[shop]["Items"][item]["cRarity"]
+                        del shops[shop]["Items"][item]["aItemStats"]
+                        del shops[shop]["Items"][item]["cashType"]
+                        del shops[shop]["Items"][item]["cashValue"]
                     except KeyError:
                         pass
                 return await self.ctx.send("Item type set to {}.".format(_type.content.lower()))
-            return _type.content.lower(), None, None, None
+            return _type.content.lower(), None, None, None, None, None, None
         async with self.instance.Shops() as shops:
             shops[shop]["Items"][item]["Type"] = _type.content.lower()
 
@@ -1412,7 +1841,7 @@ class Parser:
             return True
 
     def type_checks(self, idx, row, messages):
-        if row["Type"].lower() not in ("basic", "random", "auto", "role"):
+        if row["Type"].lower() not in ("basic", "random", "auto", "role","achest","distributable","redeemable"):
             log.warning("Row {} was not added because of an invalid type.".format(idx))
             return False
         elif row["Type"].lower() == "role" and not row["Role"]:
@@ -1446,6 +1875,11 @@ class Parser:
                 return False
             else:
                 return True
+        elif row["Type"].lower() == "achest" and not row["cRarity"]:
+            log.warning("Row {} was not added because the type is an Adventure Chest, but no Rarity was set.".format(idx))
+            return False
+        elif row["Type"].lower() == "redeemable" or row["Type"].lower() == "distributable":
+            return True
         else:
             return True
 
@@ -1469,7 +1903,7 @@ class Parser:
         if not reader:
             return await self.msg.edit(content="Data was faulty. No data was added.")
 
-        keys = ("Cost", "Qty", "Type", "Info", "Role", "Messages")
+        keys = ("Cost", "Qty", "Type", "Info", "Role", "Messages", "cRarity", "aItemStats", "cashType", "cashValue")
         for idx, row in enumerate(reader, 1):
             try:
                 messages = [x.strip() for x in row["Messages"].split(",") if x]
@@ -1491,8 +1925,29 @@ class Parser:
                 }
                 if data["Qty"] == 0:
                     data["Qty"] = "--"
+                if data["Type"].lower() == 'redeemable' or 'distributable':
+                    prefix = {
+                        'distributable': '[D]',
+                        'redeemable': '[R]',
+                        }
+                    itemCashType = {
+                        'nitro': 'Discord Nitro',
+                        'giftcard': 'Gift Card',
+                        }
+
+                    if data["cashType"].lower() == 'nitro':
+                        if int(data["cashValue"]) == 12:
+                            data["cashValue"] == '1Y'
+                            item_name = f"{prefix[data['Type'].lower()]} {itemCashType[data['cashType'].lower()]} - 1 Year"
+                        else:
+                            item_name = f"{prefix[data['Type'].lower()]} {itemCashType[data['cashType'].lower()]} - {data['cashValue']} Month(s)"
+                    else:
+                        item_name = f"{prefix[data['Type'].lower()]} {itemCashType[data['cashType'].lower()]} - USD {data['cashValue']}"
+                else:
+                    item_name = row["Item"]
+
                 item_manager = ItemManager(self.ctx, self.instance)
-                await item_manager.add(data, row["Shop"], row["Item"], new_allowed=True)
+                await item_manager.add(data, row["Shop"], item_name, new_allowed=True)
         await self.msg.edit(content="Bulk process finished. Please check your console for more information.")
 
 
