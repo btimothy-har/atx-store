@@ -1925,7 +1925,7 @@ class Parser:
                 }
                 if data["Qty"] == 0:
                     data["Qty"] = "--"
-                if data["Type"].lower() == 'redeemable' or 'distributable':
+                if data["Type"].lower() == 'redeemable' or data["Type"].lower() == 'distributable':
                     prefix = {
                         'distributable': '[D]',
                         'redeemable': '[R]',
@@ -1934,7 +1934,6 @@ class Parser:
                         'nitro': 'Discord Nitro',
                         'giftcard': 'Gift Card',
                         }
-
                     if data["cashType"].lower() == 'nitro':
                         if int(data["cashValue"]) == 12:
                             data["cashValue"] == '1Y'
