@@ -1278,6 +1278,8 @@ class ShopManager:
         if _type == "aitem":
             acog = self.ctx.bot.get_cog("Adventure")
             item_astats = item_data['aItemStats']
+
+            item_name = f"{self.ctx.author.name}'s {item}"
             adventure_item = {item: item_astats}
             adventure_item_grant = Item.from_json(self.ctx, adventure_item)
             async with Adventure.get_lock(acog,user):
