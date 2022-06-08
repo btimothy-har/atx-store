@@ -846,6 +846,7 @@ class Shop(commands.Cog):
         all_user_data = await self.config.all_members()
 
         for user_id, data in all_user_data[ctx.guild.id].items():
+            member_has_redemption = False
             member = ctx.guild.get_member(user_id)
             if member == None:
                 memberPlaceholder = namedtuple("placeholder","id guild")
