@@ -83,7 +83,7 @@ async def giftcard_availability(self, ctx):
 
     if regionChoice.choice == None:
         await regionChoice.quit(f"{ctx.author.mention}, selection has been cancelled.")
-        return None
+        return None, None
     else:
         userRegion = regionChoice.choice
         countrySelect = list(giftCardIndex[str(userRegion)].keys())
@@ -95,7 +95,7 @@ async def giftcard_availability(self, ctx):
         await countryChoice.run()
         if countryChoice.choice == None:
             await countryChoice.quit(f"{ctx.author.mention}, selection has been cancelled.")
-            return None
+            return None, None
         else:
             await countryChoice.quit()
             userCountry = countryChoice.choice
@@ -104,7 +104,7 @@ async def giftcard_availability(self, ctx):
             else:
                 cashList = giftCardIndex[str(userRegion)][str(userCountry)]
             cashList.append("Discord Nitro")
-            return userCountry, cashList      
+            return userCountry, cashList
 
 class Shop(commands.Cog):
     shop_defaults = {
@@ -283,8 +283,13 @@ class Shop(commands.Cog):
             item_data = data[item_name]
 
             if item_data['Qty'] > 1:
-                ask_qty = await ctx.send(f"**How many of {item_name} would you like to redeem?**")
-                get_qty = await ctx.bot.wait_for("message", timeout=25, check=check_qty)
+                ask_qty = await ctx.send(f"How many of **{item_name}** would you like to redeem?")
+                try:
+                    get_qty = await ctx.bot.wait_for("message", timeout=25, check=check_qty)
+                except asyncio.TimeoutError:
+                    await ask_qty.delete()
+                    return await ctx.send(f"{ctx.author.mention}, redemption has been cancelled.")
+
                 qty = int(get_qty.content)
                 await ask_qty.delete()
                 await get_qty.delete()
@@ -292,6 +297,7 @@ class Shop(commands.Cog):
                 qty = 1
 
             timestamp = datetime.datetime.now()
+            await redeem_choice.quit()
             if item_data['cashType'] == 'nitro':
                 embed = discord.Embed(title="Redemption Request",
                                         description=f"Item: {item_name}"+
@@ -300,19 +306,22 @@ class Shop(commands.Cog):
                                         color=await ctx.embed_color())
                 embed.set_author(name=f"{ctx.author.display_name}#{ctx.author.discriminator}",icon_url=ctx.author.avatar_url)
                 embed.set_footer(text=f"{timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
-                await redeem_choice.quit()
                 await ctx.send(content=ctx.guild.owner.mention, embed=embed)
 
             if item_data['cashType'] == 'giftcard' or item_data['cashType'] == 'goldpass':
-                gc_notice = await ctx.send("Note: Cash Item redemptions are subject to availability. We can offer alternative arrangements but cannot guarantee the usability of such rewards.")
+                gc_notice = await ctx.send("Cash Item redemptions are subject to availability. We can offer alternative arrangements but cannot guarantee the usability of such rewards.")
                 userCountry, cashList = await giftcard_availability(self, ctx)
 
+                if not userCountry and not cashList:
+                    await gc_notice.delete()
+                    return
+                
                 if item_data['cashType'] == 'goldpass':
                     cashListChoose = []
-                    if "Apple iTunes" in cashList:
-                        cashListChoose.append("Apple iTunes")
-                    if "Google Play" in cashList:
-                        cashListChoose.append("Google Play")
+                if "Apple iTunes" in cashList:
+                    cashListChoose.append("Apple iTunes")
+                if "Google Play" in cashList:
+                    cashListChoose.append("Google Play")
                     cashListChoose.append("Discord Nitro Classic")
                 else:
                     cashListChoose = cashList
@@ -700,6 +709,54 @@ class Shop(commands.Cog):
             await parser.search_csv(fp)
         else:
             await parser.parse_text_entry(entry)
+
+    @shopadmin.command(name="getdist")
+    @commands.is_owner()
+    async def outstanding_distributions(self,ctx):
+        """Runs distribution process for Distributable items."""
+
+        instance = await self.get_instance(ctx, settings=True)
+        
+        try:
+            redeem_role = await instance.Settings.Redeem_Role()
+            redemption_role = discord.utils.get(ctx.guild.roles, name=redeem_role)
+        except:
+            redemption_role = None
+        try:
+            announcement_id = await instance.Settings.Distribution_Channel()
+            announcement_channel = discord.utils.get(ctx.guild.channels,id=announcement_id)
+        except:
+            announcement_channel = None
+
+        dist_list = []
+        dist_count = 0
+
+        embed = discord.Embed(title="Outstanding Cash Items",
+                            description=f"",
+                            color=await ctx.embed_color())
+
+        all_inventory = await self.config.all_members()
+
+        for user, data in all_inventory[ctx.guild.id].items():
+
+            user_invcount = 0
+            userIns = ctx.guild.get_member(user)
+            itemList = ""
+
+            for item, item_data in data['Inventory'].items():
+                if item_data['Type'] == 'distributable' or item_data['Type'] == 'redeemable':
+                    itemList += f"\u200b\u3000{item_data['Qty']}x {item}\n"
+                    user_invcount += 1
+                    dist_count += 1
+
+            if user_invcount > 0:
+                embed.add_field(name=f"{userIns.display_name}#{userIns.discriminator}",value=itemList,inline=False)
+
+        if dist_count > 0:
+            await ctx.send(embed=embed)
+        else:
+            await ctx.send("No Items outstanding for distribution.")
+
 
     @shopadmin.command(name="rundist")
     @commands.is_owner()
