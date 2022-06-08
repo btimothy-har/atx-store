@@ -51,7 +51,7 @@ prefix = {
     }
 itemCashType = {
     'nitro': 'Discord Nitro',
-    'giftcard': 'Cash Item',
+    'giftcard': 'Cash Ticket',
     'goldpass': 'Gold Pass',
 }
 
@@ -811,7 +811,7 @@ class Shop(commands.Cog):
 
                 elif distItem['item_data']['cashType'] == "goldpass":
                     distItemValue = 5
-                    distItemName = f"{prefix[distItem['item_data']['Type']]} COC Gold Pass - USD5 Gift Card"
+                    distItemName = f"{prefix[distItem['item_data']['Type']]} COC Gold Pass (USD5 Value)"
 
                 else:
                     distItemValue = int(distItem['item_data']['cashValue'])
@@ -1486,7 +1486,7 @@ class ItemManager:
                 else:
                     name = f"{prefix[_type]} {itemCashType[cashType]} - {cashValue} Month(s)"
             if cashType == 'goldpass':
-                name = f"{prefix[_type]} COC Gold Pass - USD5 Gift Card"
+                name = f"{prefix[_type]} COC Gold Pass (USD5 Gift Card)"
             else:
                 name = f"{prefix[_type]} {itemCashType[cashType]} - USD {cashValue}"
 
