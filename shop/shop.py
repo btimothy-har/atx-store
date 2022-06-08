@@ -10,6 +10,7 @@ import uuid
 import sys
 import datetime
 import random
+import interactions
 
 from bisect import bisect
 from copy import deepcopy
@@ -20,6 +21,7 @@ from typing import Literal
 from .menu import ShopMenu
 from .inventory import Inventory
 from .checks import Checks
+from .giftcard import giftCardIndex
 
 # Discord.py
 import discord
@@ -44,6 +46,16 @@ log = logging.getLogger("red.shop")
 __version__ = "3.1.13"
 __author__ = "Ataraxy"
 
+prefix = {
+    'distributable': '[D]',
+    'redeemable': '[R]',
+    }
+itemCashType = {
+    'nitro': 'Discord Nitro',
+    'giftcard': 'Cash Item',
+    'goldpass': 'Gold Pass',
+}
+
 def global_permissions():
     async def pred(ctx: commands.Context):
         is_owner = await ctx.bot.is_owner(ctx.author)
@@ -63,6 +75,37 @@ def check_if_role_in_roles(admin_roles, user_roles):
     if not intersection:
         return False
     return True
+
+async def giftcard_availability(self, ctx):
+    regionSelect = list(giftCardIndex.keys())
+    regionSelect.sort()
+    regionChoice = BotMultipleChoice(ctx,regionSelect,f"{ctx.author.display_name}, which World Region do you reside in?")
+    await regionChoice.run()
+
+    if regionChoice.choice == None:
+        await regionChoice.quit(f"{ctx.author.mention}, selection has been cancelled.")
+        return None
+    else:
+        userRegion = regionChoice.choice
+        countrySelect = list(giftCardIndex[str(userRegion)].keys())
+        countrySelect.sort()
+        countrySelect.append("My Country is not on this list.")
+        
+        countryChoice = BotMultipleChoice(ctx,countrySelect,f"{ctx.author.display_name}, select your Country from the below list.")
+        await regionChoice.quit()
+        await countryChoice.run()
+        if countryChoice.choice == None:
+            await countryChoice.quit(f"{ctx.author.mention}, selection has been cancelled.")
+            return None
+        else:
+            await countryChoice.quit()
+            userCountry = countryChoice.choice
+            if userCountry == "My Country is not on this list.":
+                cashList = []
+            else:
+                cashList = giftCardIndex[str(userRegion)][str(userCountry)]
+            cashList.append("Discord Nitro")
+            return userCountry, cashList      
 
 class Shop(commands.Cog):
     shop_defaults = {
@@ -92,9 +135,33 @@ class Shop(commands.Cog):
         all_members = await self.config.all_members()
         async for guild_id, guild_data in AsyncIter(all_members.items(), steps=100):
             if user_id in guild_data:
-                await self.config.member_from_ids(guild_id, user_id).clear()
-
+                await self.config.member_from_ids(guild_id, user_id).clear()      
+            
     # -----------------------COMMANDS-------------------------------------
+
+    @commands.command(name="checkcash")
+    @commands.max_concurrency(1, commands.BucketType.user)
+    async def giftcard_browse(self, ctx):
+        """Check Cash Item availability based on Country."""
+        timestamp = datetime.datetime.now()
+        userCountry, cashList = await giftcard_availability(self, ctx)
+
+        cashListdesc = ""
+        num = 0
+        for item in cashList:
+            num += 1
+            cashListdesc += f"> **{num}** {item}\n"
+
+        embed = discord.Embed(title="",
+                        description=f"You may redeem your ATC for the below Cash items, based on the information you provided."+
+                                    f"\n\u200b\n**Country: {userCountry}**"
+                                    f"\n\u200b\n{cashListdesc}"+
+                                    f"\n*All redemptions are subject to market availability at the time of redemption. This list is __not__ a guarantee of redemption.*",
+                        color=await ctx.embed_color())
+        embed.set_author(name=f"{ctx.author.display_name}#{ctx.author.discriminator}",icon_url=ctx.author.avatar_url)
+        embed.set_footer(text=f"{timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+
+        await ctx.send(embed=embed)
 
     @commands.command()
     @commands.max_concurrency(1, commands.BucketType.user)
@@ -237,33 +304,36 @@ class Shop(commands.Cog):
                 await redeem_choice.quit()
                 await ctx.send(content=ctx.guild.owner.mention, embed=embed)
 
-            if item_data['cashType'] == 'giftcard':
-                card_platforms = ['Apple iTunes','Google Play','XBox Live','PlayStation Network','Nintendo eShop']
+            if item_data['cashType'] == 'giftcard' or item_data['cashType'] == 'goldpass':
+                gc_notice = await ctx.send("Note: Cash Item redemptions are subject to availability. We can offer alternative arrangements but cannot guarantee the usability of such rewards.")
+                userCountry, cashList = await giftcard_availability(self, ctx)
 
-                gc_notice = await ctx.send("Note: Gift Card redemptions are subject to availability. If the particular combination of Platform & Country is not available, you will be offered alternatives.")
-                platform_choice = BotMultipleChoice(ctx,card_platforms,"Choose the platform you'd like to receive your Gift Card for.")
-                await platform_choice.run()
-                if platform_choice.choice == None:
-                    await redeem_choice.quit()
-                    return await platform_choice.quit(f"{ctx.author.mention}, redemption has been cancelled.")
+                if item_data['cashType'] == 'goldpass':
+                    cashListChoose = []
+                    if "Apple iTunes" in cashList:
+                        cashListChoose.append("Apple iTunes")
+                    if "Google Play" in cashList:
+                        cashListChoose.append("Google Play")
+                    cashListChoose.append("Discord Nitro Classic")
                 else:
-                    platform_select = platform_choice.choice
-                    await platform_choice.quit()
-
-                    ask_country = await ctx.send(f"**What is your Country of Residence (or Account Registration)?**")
-                    get_country = await ctx.bot.wait_for("message", timeout=25)
-                    country = get_country.content
-                    await ask_country.delete()
-                    await get_country.delete()
+                    cashListChoose = cashList
+                
+                itemChoice = BotMultipleChoice(ctx,cashListChoose,f"{ctx.author.display_name}, select a platform to receive your Gift Card for.")
+                await itemChoice.run()
+                if itemChoice.choice == None:
+                    return await itemChoice.quit(f"{ctx.author.mention}, redemption has been cancelled.")
+                else:
+                    itemSelect = itemChoice.choice
+                    await itemChoice.quit()
 
                 await gc_notice.delete()
                 embed = discord.Embed(title="Redemption Request",
-                                        description=f"Item: {item_name}"+
-                                                    f"\nQuantity: {qty}"+
-                                                    f"\nPlatform: {platform_select}"+
-                                                    f"\nCountry: {country}"+
-                                                    f"\n\u3000\n**Note: Gift Card redemptions are subject to availability.** If the particular combination of Platform & Country is not available, you will be offered alternatives.\n*If no alternatives are available, you will receive the value equivalent of Discord Nitro.*"+
-                                                    f"\n\nAll redemption requests will be fulfilled within **72 hours**.",
+                                    description=f"Item: {item_name}"+
+                                                f"\nQuantity: {qty}"+
+                                                f"\nPlatform: {itemSelect}"+
+                                                f"\nCountry: {userCountry}"+
+                                                f"\n\u3000\n**Note: Cash Item redemptions are subject to availability.** Any alternative arrangements are not guaranteed.\n*If no alternatives are available, you will receive the value equivalent of Discord Nitro.*"+
+                                                f"\n\nAll redemption requests will be fulfilled within **72 hours**.",
                                         color=await ctx.embed_color())
                 embed.set_author(name=f"{ctx.author.display_name}#{ctx.author.discriminator}",icon_url=ctx.author.avatar_url)
                 embed.set_footer(text=f"{timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -643,88 +713,66 @@ class Shop(commands.Cog):
             redeem_role = await instance.Settings.Redeem_Role()
             redemption_role = discord.utils.get(ctx.guild.roles, name=redeem_role)
         except:
-            redemption_role = None        
-
+            redemption_role = None
         try:
             announcement_id = await instance.Settings.Distribution_Channel()
             announcement_channel = discord.utils.get(ctx.guild.channels,id=announcement_id)
         except:
             announcement_channel = None
 
-        nitro_dist = []
-        giftcard_dist = []
-
-        prefix = {
-            'distributable': '[D]',
-            'redeemable': '[R]',
-            }
-        itemCashType = {
-            'nitro': 'Discord Nitro',
-            'giftcard': 'Gift Card',
-            }
+        dist_list = []
+        dist_value = 0
 
         all_inventory = await self.config.all_members()
 
         for user, data in all_inventory[ctx.guild.id].items():            
             for item, item_data in data['Inventory'].items():
 
-                if item_data['Type'] == 'distributable' and item_data['cashType'] == 'nitro':
-                    nitro_item = [{
+                if item_data['Type'] == 'distributable':
+                    dist_item = [{
                         'user': user,
                         'item': item,
                         'item_data': item_data,
                         }]
-                    nitro_item = nitro_item * item_data['Qty']
-                    nitro_dist.extend(nitro_item)
+                    dist_item = dist_item * item_data['Qty']
+                    dist_list.extend(dist_item)
 
-                if item_data['Type'] == 'distributable' and item_data['cashType'] == 'giftcard':
-                    giftcard_item = [{
-                        'user': user,
-                        'item': item,
-                        'item_data': item_data,
-                        }]
-                    giftcard_item = giftcard_item * item_data['Qty']
-                    giftcard_dist.extend(giftcard_item)
+        if len(dist_list) > 0:
+            while len(dist_list) > 0 and dist_value < 20:
+                
+                random.shuffle(dist_list)
+                distItem = dist_list.pop(random.randint(0,len(dist_list)-1))
 
-        if len(nitro_dist) > 0:
-            random.shuffle(nitro_dist)
-            nitro_select = random.choice(nitro_dist)
-            nitro_select['item_data']['Type'] = 'redeemable'
-            nitro_recipient = ctx.guild.get_member(nitro_select['user'])
+                distItem['item_data']['Type'] = 'redeemable'
+                recipient = ctx.guild.get_member(distItem['user'])
 
-            if nitro_select['item_data']['cashValue'] == '1Y':
-                nitro_name = f"{prefix[nitro_select['item_data']['Type']]} {itemCashType[nitro_select['item_data']['cashType']]} - 1 Year"
-            else:
-                nitro_name = f"{prefix[nitro_select['item_data']['Type']]} {itemCashType[nitro_select['item_data']['cashType']]} - {nitro_select['item_data']['cashValue']} Month(s)"
+                if distItem['item_data']['cashType'] == "nitro":
+                    if distItem['item_data']['cashValue'] == '1Y':
+                        distItemValue = 100
+                        distItemName = f"{prefix[distItem['item_data']['Type']]} {itemCashType[distItem['item_data']['cashType']]} - 1 Year"
+                    else:
+                        distItemValue = int(distItem['item_data']['cashValue'])
+                        distItemName = f"{prefix[distItem['item_data']['Type']]} {itemCashType[distItem['item_data']['cashType']]} - {distItem['item_data']['cashValue']} Month(s)"
 
-            user_instance = await self.get_instance(ctx, user=nitro_recipient)
-            sm = ShopManager(ctx,None,user_instance)
+                elif distItem['item_data']['cashType'] == "goldpass":
+                    distItemValue = 5
+                    distItemName = f"{prefix[distItem['item_data']['Type']]} COC Gold Pass - USD5 Gift Card"
 
-            await sm.remove(item=nitro_select['item'],number=1)
-            await sm.add(item=f"{nitro_name}",data=nitro_select['item_data'],quantity=1)
-            
-            if redemption_role:
-                await nitro_recipient.add_roles(redemption_role)
-            if announcement_channel:
-                await announcement_channel.send(content=f"{nitro_recipient.mention} is now able to redeem 1x **{nitro_name}**!")
+                else:
+                    distItemValue = int(distItem['item_data']['cashValue'])
+                    distItemName = f"{prefix[distItem['item_data']['Type']]} {itemCashType[distItem['item_data']['cashType']]} - USD {distItem['item_data']['cashValue']}"
 
-        if len(giftcard_dist) > 0:
-            random.shuffle(giftcard_dist)
-            giftcard_select = random.choice(giftcard_dist)
-            giftcard_select['item_data']['Type'] = 'redeemable'
-            giftcard_recipient = ctx.guild.get_member(giftcard_select['user'])
+                recipient_ins = await self.get_instance(ctx,user=recipient)
+                sm = ShopManager(ctx,None,recipient_ins)
 
-            giftcard_name = f"{prefix[giftcard_select['item_data']['Type']]} {itemCashType[giftcard_select['item_data']['cashType']]} - USD {giftcard_select['item_data']['cashValue']}"
-
-            user_instance = await self.get_instance(ctx, user=giftcard_recipient)
-            sm = ShopManager(ctx, None, user_instance)
-            await sm.remove(item=giftcard_select['item'],number=1)
-            await sm.add(item=f"{giftcard_name}", data=giftcard_select['item_data'], quantity=1)
-            
-            if redemption_role:
-                await giftcard_recipient.add_roles(redemption_role)
-            if announcement_channel:
-                await announcement_channel.send(content=f"{giftcard_recipient.mention} is now able to redeem 1x **{giftcard_name}**!")
+                await sm.remove(item=distItem['item'],number=1)
+                await sm.add(item=f"{distItemName}",data=distItem['item_data'],quantity=1)
+                
+                if redemption_role:
+                    await recipient.add_roles(redemption_role)
+                if announcement_channel:
+                    await announcement_channel.send(content=f"{recipient.mention} is now able to redeem 1x **{distItemName}**!")
+                dist_value += distItemValue
 
     @shopadmin.command(name="runcleanup")
     @commands.is_owner()
@@ -1369,20 +1417,13 @@ class ItemManager:
         }
 
         if _type == 'distributable' or _type == 'redeemable':
-            prefix = {
-                'distributable': '[D]',
-                'redeemable': '[R]',
-                }
-            itemCashType = {
-                'nitro': 'Discord Nitro',
-                'giftcard': 'Gift Card',
-                }
-
             if cashType == 'nitro':
                 if cashValue == '1Y':
                     name = f"{prefix[_type]} {itemCashType[cashType]} - 1 Year"
                 else:
                     name = f"{prefix[_type]} {itemCashType[cashType]} - {cashValue} Month(s)"
+            if cashType == 'goldpass':
+                name = f"{prefix[_type]} COC Gold Pass - USD5 Gift Card"
             else:
                 name = f"{prefix[_type]} {itemCashType[cashType]} - USD {cashValue}"
 
@@ -1637,7 +1678,7 @@ class ItemManager:
         return itemStatsDict
 
     def cashtype_check(self, m):
-        valid_cashtype = ["nitro", "giftcard"]
+        valid_cashtype = ["giftcard","goldpass"]
         if m.content.lower() in valid_cashtype:
             return True
         else:
@@ -1645,9 +1686,8 @@ class ItemManager:
 
     async def set_cashtype(self, item=None, shop=None):
         await self.ctx.send(
-            "What Cash Type should this item grant? Valid types: Nitro or GiftCard."
+            "```What Cash Type should this item grant?```Valid types: GiftCard or GoldPass."
         )
-
         cashtype = await self.ctx.bot.wait_for("message", timeout=25, check=self.cashtype_check)
         if item:
             async with self.instance.Shops() as shops:
@@ -1664,7 +1704,7 @@ class ItemManager:
 
         if type == 'nitro':
             await self.ctx.send(
-                "How many months of Nitro does this provide? Max of 12 months."
+                "```How many months of Nitro does this provide? Max of 12 months.```"
             )
             nitroValue = await self.ctx.bot.wait_for("message", timeout=25, check=nitro_check)
             if int(nitroValue.content) == 12:
@@ -1679,7 +1719,7 @@ class ItemManager:
 
         if type == 'giftcard':
             await self.ctx.send(
-                "What's the value of this Gift Card? In USD. Max of 50."
+                "```What's the value of this Gift Card? In USD. Max of 50.```"
             )
             giftcardValue = await self.ctx.bot.wait_for("message", timeout=25, check=giftcard_check)
             if item:
@@ -1687,6 +1727,9 @@ class ItemManager:
                     shops[shop]["Items"][item]["cashValue"] = str(giftcardValue.content)
                 return await self.ctx.send("This Gift Card item is worth USD {}.".format(giftcardValue.content))
             return str(giftcardValue.content)
+
+        if type == 'goldpass':
+            return str("5")
 
     async def set_quantity(self, _type=None, item=None, shop=None):
         if _type == "auto":
@@ -1815,7 +1858,6 @@ class ItemManager:
             pass
         return
 
-
 class Parser:
     def __init__(self, ctx, instance, msg):
         self.ctx = ctx
@@ -1928,14 +1970,6 @@ class Parser:
                 if data["Qty"] == 0:
                     data["Qty"] = "--"
                 if data["Type"].lower() == 'redeemable' or data["Type"].lower() == 'distributable':
-                    prefix = {
-                        'distributable': '[D]',
-                        'redeemable': '[R]',
-                        }
-                    itemCashType = {
-                        'nitro': 'Discord Nitro',
-                        'giftcard': 'Gift Card',
-                        }
                     if data["cashType"].lower() == 'nitro':
                         if int(data["cashValue"]) == 12:
                             data["cashValue"] == '1Y'
