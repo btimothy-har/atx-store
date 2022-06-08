@@ -318,10 +318,10 @@ class Shop(commands.Cog):
                 
                 if item_data['cashType'] == 'goldpass':
                     cashListChoose = []
-                if "Apple iTunes" in cashList:
-                    cashListChoose.append("Apple iTunes")
-                if "Google Play" in cashList:
-                    cashListChoose.append("Google Play")
+                    if "Apple iTunes" in cashList:
+                        cashListChoose.append("Apple iTunes")
+                    if "Google Play" in cashList:
+                        cashListChoose.append("Google Play")
                     cashListChoose.append("Discord Nitro Classic")
                 else:
                     cashListChoose = cashList
