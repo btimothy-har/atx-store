@@ -851,6 +851,13 @@ class Shop(commands.Cog):
                 memberPlaceholder = namedtuple("placeholder","id guild")
                 member = memberPlaceholder(user_id,ctx.guild)
                 await self.config.member(member).clear()
+            else:
+                for item, item_data in data['Inventory'].items():
+                    if item_data['Type'] == 'redeemable':
+                        member_has_redemption = True
+
+                if member_has_redemption:
+                    await member.add_roles(redemption_role)
 
         if redemption_role:
             members_with_redemption = redemption_role.members
@@ -871,9 +878,6 @@ class Shop(commands.Cog):
 
                     if not member_has_redemption:
                         await member.remove_roles(redemption_role)
-
-                    if member_has_redemption:
-                        await member.add_roles(redemption_role)
 
         return await ctx.send("Clean up completed.")
 
