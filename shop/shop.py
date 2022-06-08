@@ -872,6 +872,9 @@ class Shop(commands.Cog):
                     if not member_has_redemption:
                         await member.remove_roles(redemption_role)
 
+                    if member_has_redemption:
+                        await member.add_roles(redemption_role)
+
         return await ctx.send("Clean up completed.")
 
     # -----------------------------------------------------------------------------
