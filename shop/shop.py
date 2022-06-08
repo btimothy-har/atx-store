@@ -10,7 +10,6 @@ import uuid
 import sys
 import datetime
 import random
-import interactions
 
 from bisect import bisect
 from copy import deepcopy
