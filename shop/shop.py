@@ -345,7 +345,6 @@ class Shop(commands.Cog):
                                         color=await ctx.embed_color())
                 embed.set_author(name=f"{ctx.author.display_name}#{ctx.author.discriminator}",icon_url=ctx.author.avatar_url)
                 embed.set_footer(text=f"{timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
-                await redeem_choice.quit()
                 await ctx.send(content=ctx.guild.owner.mention, embed=embed)
 
             sm = ShopManager(ctx, instance=None,user_data=instance)
