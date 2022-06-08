@@ -823,11 +823,11 @@ class Shop(commands.Cog):
                 await sm.remove(item=distItem['item'],number=1)
                 await sm.add(item=f"{distItemName}",data=distItem['item_data'],quantity=1)
                 
+                dist_value += distItemValue
                 if redemption_role:
                     await recipient.add_roles(redemption_role)
                 if announcement_channel:
-                    await announcement_channel.send(content=f"{recipient.mention} is now able to redeem 1x **{distItemName}**!")
-                dist_value += distItemValue
+                    await announcement_channel.send(content=f"{recipient.mention}```You've won a Cash Draw and are able to redeem 1x **{distItemName}**!```")
 
     @shopadmin.command(name="runcleanup")
     @commands.is_owner()
