@@ -97,8 +97,8 @@ async def giftcard_availability(self, ctx):
             await countryChoice.quit(f"{ctx.author.mention}, selection has been cancelled.")
             return None, None
         else:
-            await countryChoice.quit()
             userCountry = countryChoice.choice
+            await countryChoice.quit()            
             if userCountry == "My Country is not on this list.":
                 cashList = []
             else:
