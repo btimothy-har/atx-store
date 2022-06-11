@@ -145,22 +145,23 @@ class Shop(commands.Cog):
         timestamp = datetime.datetime.now()
         userCountry, cashList = await giftcard_availability(self, ctx)
 
-        cashListdesc = ""
-        num = 0
-        for item in cashList:
-            num += 1
-            cashListdesc += f"> **{num}** {item}\n"
+        if cashList:
+            cashListdesc = ""
+            num = 0
+            for item in cashList:
+                num += 1
+                cashListdesc += f"> **{num}** {item}\n"
 
-        embed = discord.Embed(title="",
-                        description=f"You may redeem your ATC for the below Cash items, based on the information you provided."+
+            embed = discord.Embed(title="",
+                                description=f"You may redeem your ATC for the below Cash items, based on the information you provided."+
                                     f"\n\u200b\n**Country: {userCountry}**"
                                     f"\n\u200b\n{cashListdesc}"+
                                     f"\n*All redemptions are subject to market availability at the time of redemption. This list is __not__ a guarantee of redemption.*",
-                        color=await ctx.embed_color())
-        embed.set_author(name=f"{ctx.author.display_name}#{ctx.author.discriminator}",icon_url=ctx.author.avatar_url)
-        embed.set_footer(text=f"{timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+                                color=await ctx.embed_color())
+            embed.set_author(name=f"{ctx.author.display_name}#{ctx.author.discriminator}",icon_url=ctx.author.avatar_url)
+            embed.set_footer(text=f"{timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
 
-        await ctx.send(embed=embed)
+            await ctx.send(embed=embed)
 
     @commands.command()
     @commands.max_concurrency(1, commands.BucketType.user)
