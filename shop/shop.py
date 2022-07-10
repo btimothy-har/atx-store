@@ -180,7 +180,7 @@ class Shop(commands.Cog):
             item = await menu.display()
         except RuntimeError:
             return
-        await self.pending_prompt(ctx, instance, data, item)
+        #await self.pending_prompt(ctx, instance, data, item)
 
     @commands.command(name="store", aliases=["buy"])
     @commands.max_concurrency(1, commands.BucketType.user)
